@@ -135,9 +135,15 @@ fn token_figures(task: &Value) -> Option<(String, Option<i64>)> {
     }
 }
 
-/// One glyph per sample, scaled between the smallest and largest sample, so
-/// the shape shows the trend rather than the absolute size. `None` under two
-/// numeric samples, where there is no trend to draw.
+/// One glyph per tick of growth: the difference between consecutive samples
+/// on a log scale against the largest difference. `tokenSamples` is a
+/// cumulative count, so plotting the samples themselves would just show one
+/// step from the initial zero to a flat block; the deltas show whether the
+/// subagent is busy right now. The first tick loads the whole prompt (tens of
+/// thousands of tokens) while later ticks add hundreds, so a linear scale
+/// would flatten those too; the log keeps them visible. A drop (a compaction)
+/// counts as no growth. `None` under two numeric samples, where there is no
+/// delta to draw.
 fn sparkline(task: &Value) -> Option<String> {
     let samples: Vec<f64> = task
         .get("tokenSamples")?
@@ -148,15 +154,14 @@ fn sparkline(task: &Value) -> Option<String> {
     if samples.len() < 2 {
         return None;
     }
-    let min = samples.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = samples.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let span = max - min;
+    let deltas: Vec<f64> = samples.windows(2).map(|w| (w[1] - w[0]).max(0.0)).collect();
+    let max = deltas.iter().copied().fold(0.0_f64, f64::max).ln_1p();
     Some(
-        samples
+        deltas
             .iter()
-            .map(|v| {
-                let level = if span > 0.0 {
-                    ((v - min) / span * (SPARK_BARS.len() - 1) as f64).round() as usize
+            .map(|d| {
+                let level = if max > 0.0 {
+                    (d.ln_1p() / max * (SPARK_BARS.len() - 1) as f64).round() as usize
                 } else {
                     0
                 };
@@ -166,7 +171,6 @@ fn sparkline(task: &Value) -> Option<String> {
     )
 }
 
-/// `5s` under a minute, `1m12s` under an hour, `1h05m` from an hour on. A
 /// missing `startTime`, or one ahead of the clock, reads `0s`.
 fn elapsed(task: &Value, now_ms: i64) -> String {
     let start = task.get("startTime").and_then(Value::as_f64);
@@ -292,12 +296,12 @@ mod tests {
         let r = row(&running_task());
         assert_eq!(
             strip_sgr(&r),
-            "surveyor · Reading fleet.rs · 48k/200k 24% · ▁▁▂▄▆█ · 1m12s"
+            "surveyor · Reading fleet.rs · 48k/200k 24% · ▇▇███ · 1m12s"
         );
         assert!(r.contains(&format!("{BLUE}surveyor{RESET}")));
         assert!(r.contains(&format!("{DIM}Reading fleet.rs{RESET}")));
         assert!(r.contains(&format!("{ORANGE}48k/200k{RESET} {GREEN}24%{RESET}")));
-        assert!(r.contains(&format!("{DIM}▁▁▂▄▆█{RESET}")));
+        assert!(r.contains(&format!("{DIM}▇▇███{RESET}")));
         assert!(r.contains(&format!("{DIM}1m12s{RESET}")));
         assert!(r.contains(&format!(" {DIM}·{RESET} ")));
     }
@@ -392,11 +396,11 @@ mod tests {
             strip_sgr(&wide).contains("Reading every single file under the fleet module in turn")
         );
 
-        // Everything but the label is 40 columns and its separator 3 more, so
-        // 60 leaves a 17-column label.
+        // Everything but the label is 39 columns and its separator 3 more, so
+        // 60 leaves an 18-column label.
         let r = render_row(&t, 60, NOW);
         assert_eq!(visible_width(&r), 60);
-        assert!(strip_sgr(&r).contains(" · Reading every si… · "));
+        assert!(strip_sgr(&r).contains(" · Reading every sin… · "));
         assert!(strip_sgr(&r).ends_with("1m12s"));
 
         for columns in 40..=120 {
@@ -413,27 +417,27 @@ mod tests {
     fn label_is_dropped_when_too_little_room_remains() {
         let mut t = running_task();
         t["label"] = json!("Reading every single file under the fleet module in turn");
-        // 40 columns: everything but the label is already 40 wide.
-        let r = render_row(&t, 40, NOW);
-        assert_eq!(strip_sgr(&r), "surveyor · 48k/200k 24% · ▁▁▂▄▆█ · 1m12s");
+        // 39 columns: everything but the label is already 39 wide.
+        let r = render_row(&t, 39, NOW);
+        assert_eq!(strip_sgr(&r), "surveyor · 48k/200k 24% · ▇▇███ · 1m12s");
         assert!(!strip_sgr(&r).contains('…'));
         // and at an absurdly narrow width the rest is left alone, not cut.
         let r = render_row(&t, 5, NOW);
-        assert_eq!(strip_sgr(&r), "surveyor · 48k/200k 24% · ▁▁▂▄▆█ · 1m12s");
+        assert_eq!(strip_sgr(&r), "surveyor · 48k/200k 24% · ▇▇███ · 1m12s");
     }
 
     #[test]
     fn a_short_label_survives_a_tight_budget() {
         let mut t = running_task();
         t["label"] = json!("scan");
-        // 43 columns go to everything else plus the label's separator. Three
+        // 42 columns go to everything else plus the label's separator. Three
         // spare is under the 8-char minimum and too few for "scan"; four fits
         // it whole.
-        let r = render_row(&t, 43 + 3, NOW);
+        let r = render_row(&t, 42 + 3, NOW);
         assert!(!strip_sgr(&r).contains("scan"));
-        let r = render_row(&t, 43 + 4, NOW);
+        let r = render_row(&t, 42 + 4, NOW);
         assert!(strip_sgr(&r).contains("scan"));
-        assert_eq!(visible_width(&r), 47);
+        assert_eq!(visible_width(&r), 46);
     }
 
     #[test]
@@ -446,25 +450,30 @@ mod tests {
     }
 
     #[test]
-    fn sparkline_scales_between_min_and_max() {
+    fn sparkline_plots_growth_per_tick() {
         let spark = |samples: Value| {
             let t = json!({ "tokenSamples": samples });
             sparkline(&t)
         };
-        // flat: nothing to scale, lowest bar throughout.
-        assert_eq!(spark(json!([5, 5, 5])).as_deref(), Some("▁▁▁"));
-        // rising: full range, ends on the extremes.
+        // flat count: no growth, lowest bar per tick.
+        assert_eq!(spark(json!([5, 5, 5])).as_deref(), Some("▁▁"));
+        // steady growth: every tick is the maximum.
+        assert_eq!(spark(json!([0, 1, 2, 3])).as_deref(), Some("███"));
+        // accelerating: bars rise with the per-tick delta.
+        assert_eq!(spark(json!([0, 1, 3, 6, 10])).as_deref(), Some("▄▆▇█"));
+        // the initial prompt load no longer flattens the later ticks: on the
+        // log scale a 300-token tick after an 18k one still shows mid-height.
         assert_eq!(
-            spark(json!([0, 1, 2, 3, 4, 5, 6, 7])).as_deref(),
-            Some("▁▂▃▄▅▆▇█")
+            spark(json!([0, 18000, 18300, 18600])).as_deref(),
+            Some("█▅▅")
         );
-        // scale is relative: the same shape at a different magnitude.
+        // scale is relative to the largest delta, not the magnitude.
         assert_eq!(
             spark(json!([1000, 8000])).as_deref(),
             spark(json!([0, 1])).as_deref()
         );
-        // falling.
-        assert_eq!(spark(json!([9, 0])).as_deref(), Some("█▁"));
+        // a drop (compaction) counts as no growth.
+        assert_eq!(spark(json!([9, 0, 9])).as_deref(), Some("▁█"));
         // a single sample, an empty list, a missing key, or non-numbers: none.
         assert_eq!(spark(json!([120_000])), None);
         assert_eq!(spark(json!([])), None);
