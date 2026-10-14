@@ -141,14 +141,14 @@ Use these names in a region's element list.
 | `cwd` | current directory basename, with git branch and `+added -deleted` counts |
 | `session` | the session name (`--name` / `/rename`, else Claude's AI-generated title), dimmed, capped at 32 characters; nothing until one exists |
 | `pr` | the branch's open PR as `#N` plus its review state (`approved` green, `changes` red, others dim: `pending`, `draft`); a GitLab merge request shows as `!N`; nothing without an open PR |
-| `tokens` | context usage: `used/total (pct% · cache hit% · sub-agent%)` |
+| `tokens` | context usage: `used/total (pct% · cache hit% · ○ sub-agent%)` — `○` is the agent panel's subagent glyph |
 | `effort` | reasoning effort level (`low`/`med`/`high`/`xhigh`/`max`) |
 | `limits` | rate-limit windows (5h / 7d usage % and reset times) |
 | `version` | installed Claude CLI version |
 | `updates` | a notice when a newer ccstatus release is available |
 | `warmth` | prompt-cache warm/cold pip — **live** (see the note above) |
-| `heatmap_main` | activity heatmap of main-agent token usage — **full-width row** |
-| `heatmap_sub` | activity heatmap of sub-agent token usage — **full-width row** |
+| `heatmap_main` | activity heatmap of main-agent token usage, labelled `●` like the agent panel — **full-width row** |
+| `heatmap_sub` | activity heatmap of sub-agent token usage, labelled `○` — **full-width row** |
 
 The two heatmaps are full-width: they ignore `left`/`right` and take the whole
 line they're placed on. Everything else is an inline segment that joins its
