@@ -20,6 +20,7 @@ mod render;
 mod render_tmux;
 mod server_dir;
 mod state;
+mod subagents;
 mod surface;
 mod term;
 mod tmux;
@@ -39,7 +40,7 @@ use serde_json::Value;
 
 use cli::{Config, ParseOutcome};
 use color::*;
-use format::{format_tokens, shorten_model_name, truncate_chars};
+use format::{format_tokens, plain_text, shorten_model_name, truncate_chars};
 use state::PaneState;
 use tmux::Tmux;
 use util::{now_unix, resolve_session_id};
@@ -50,6 +51,7 @@ fn main() -> ExitCode {
     let cfg = match cli::parse_args(env::args().skip(1)) {
         ParseOutcome::Run(c) => c,
         ParseOutcome::Hook(kind) => return hooks::run(kind),
+        ParseOutcome::Subagents => return subagents::run(),
         ParseOutcome::Handler(session) => return daemon::run(session),
         ParseOutcome::TmuxReset => {
             tmux::reset(&tmux::CliTmux);
@@ -559,18 +561,6 @@ const SESSION_NAME_MAX_CHARS: usize = 32;
 fn fast_segment(input: &Value) -> Option<String> {
     let on = input.get("fast_mode").and_then(|v| v.as_bool()) == Some(true);
     on.then(|| format!("{YELLOW}fast{RESET}"))
-}
-
-/// `raw` with control characters (ESC, newline, …) turned into spaces and the
-/// ends trimmed. Payload strings that name things (a session title is
-/// AI-generated from the conversation) go to the terminal as-is otherwise, and
-/// an ESC in one would be interpreted there.
-fn plain_text(raw: &str) -> String {
-    let spaced: String = raw
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect();
-    spaced.trim().to_string()
 }
 
 /// The `session` element: the payload's `session_name`, dimmed and capped at

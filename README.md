@@ -23,9 +23,13 @@ that's on `PATH`). The second writes `statusLine.command` (with
 `$CLAUDE_CONFIG_DIR`), preserving any other keys already in the file. The hooks
 feed the per-session state that `ccstatus top` and the tmux warmth indicator
 read (`SessionEnd` removes a finished session's state); they leave any
-non-`ccstatus` hooks you've configured untouched.
-Re-running `ccstatus --install` after an upgrade refreshes the path; it refuses
-to clobber a `statusLine` set to a non-`ccstatus` command.
+non-`ccstatus` hooks you've configured untouched. It also wires
+`subagentStatusLine` to `ccstatus --subagents`, which renders the rows of the
+subagent panel below the prompt (name, progress label, tokens against the
+context window, a token sparkline, elapsed time).
+Re-running `ccstatus --install` after an upgrade refreshes the paths; it refuses
+to clobber a `statusLine` or `subagentStatusLine` set to a non-`ccstatus`
+command.
 
 To customise which blocks render, edit `statusLine.command` in
 `settings.json` afterwards:
@@ -53,9 +57,13 @@ To customise which blocks render, edit `statusLine.command` in
 --updates         Check for newer ccstatus releases (off by default)
 --no-updates      Disable update check (default)
 --install         Wire this binary into ~/.claude/settings.json
-                  (statusLine + activity hooks) and exit
+                  (statusLine, subagentStatusLine + activity hooks) and exit
 --hook <kind>     Run as a Claude Code hook (kinds: stop,
-                  user-prompt-submit, notification, post-tool-use)
+                  user-prompt-submit, notification, post-tool-use,
+                  permission-request, session-end)
+--subagents       Render the subagent panel rows: reads Claude's
+                  subagentStatusLine JSON on stdin, prints one
+                  {"id","content"} line per row (set up by --install)
 --session <id>    Run the per-session control-mode handler for tmux
                   session <id>. Spawned automatically by the registrar;
                   not meant to be run by hand.

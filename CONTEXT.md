@@ -20,6 +20,11 @@ nouns below are specific to ccstatus.
   needs-input latch; `Notification` is the fallback for older CLIs),
   `PostToolUse` (clears the latch), and `SessionEnd` (removes the session's
   state file). Prints nothing, so Claude sees no permission decision.
+- **subagents** — `ccstatus --subagents` (`subagents.rs`). Claude Code's
+  `subagentStatusLine.command`: reads the visible subagent rows as one JSON
+  object, prints one `{"id","content"}` line per row to override. Stateless;
+  `render_rows` is the pure core. Any bad input prints nothing, so Claude
+  keeps its default rows.
 - **top** — `ccstatus top` (`top.rs`). An interactive aggregate surface over
   **all** live Claude sessions (not one tmux session): reads the **fleet**,
   renders a table, and **jumps** to a selected session. Pull-based — it needs
