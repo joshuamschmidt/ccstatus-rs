@@ -222,7 +222,7 @@ fn render_row(task: &Value, columns: usize, now_ms: i64) -> String {
     if status == Status::Running
         && let Some(spark) = sparkline(task)
     {
-        parts.push(paint(DIM, &spark));
+        parts.push(paint(ORANGE, &spark));
     }
     parts.push(paint(DIM, &elapsed(task, now_ms)));
 
@@ -301,7 +301,7 @@ mod tests {
         assert!(r.contains(&format!("{BLUE}surveyor{RESET}")));
         assert!(r.contains(&format!("{DIM}Reading fleet.rs{RESET}")));
         assert!(r.contains(&format!("{ORANGE}48k/200k{RESET} {GREEN}24%{RESET}")));
-        assert!(r.contains(&format!("{DIM}▇▇███{RESET}")));
+        assert!(r.contains(&format!("{ORANGE}▇▇███{RESET}")));
         assert!(r.contains(&format!("{DIM}1m12s{RESET}")));
         assert!(r.contains(&format!(" {DIM}·{RESET} ")));
     }
