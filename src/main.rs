@@ -39,7 +39,7 @@ use serde_json::Value;
 
 use cli::{Config, ParseOutcome};
 use color::*;
-use format::{format_tokens, shorten_model_name};
+use format::{format_tokens, shorten_model_name, truncate_chars};
 use state::PaneState;
 use tmux::Tmux;
 use util::{now_unix, resolve_session_id};
@@ -447,6 +447,10 @@ fn render_elements(input: &Value, cfg: &Config) -> Vec<(config::Element, String)
 
     out.push((E::Model, format!("{BLUE}{model_name}{RESET}")));
 
+    if let Some(s) = fast_segment(input) {
+        out.push((E::Fast, s));
+    }
+
     if cfg.cwd && !cwd.is_empty() {
         let display_dir = util::dir_label(cwd);
         let mut s = format!("{CYAN}{display_dir}{RESET}");
@@ -462,6 +466,14 @@ fn render_elements(input: &Value, cfg: &Config) -> Vec<(config::Element, String)
             }
         }
         out.push((E::Cwd, s));
+    }
+
+    if let Some(s) = session_segment(input) {
+        out.push((E::Session, s));
+    }
+
+    if let Some(s) = pr_segment(input, term::hyperlinks_supported()) {
+        out.push((E::Pr, s));
     }
 
     let cols = term::columns(120);
@@ -537,6 +549,75 @@ fn render_elements(input: &Value, cfg: &Config) -> Vec<(config::Element, String)
     }
 
     out
+}
+
+/// Longest `session` label shown, ellipsis included.
+const SESSION_NAME_MAX_CHARS: usize = 32;
+
+/// The `fast` element: shown only while the payload's `fast_mode` is `true`;
+/// `false`, absent and non-boolean all mean off.
+fn fast_segment(input: &Value) -> Option<String> {
+    let on = input.get("fast_mode").and_then(|v| v.as_bool()) == Some(true);
+    on.then(|| format!("{YELLOW}fast{RESET}"))
+}
+
+/// `raw` with control characters (ESC, newline, …) turned into spaces and the
+/// ends trimmed. Payload strings that name things (a session title is
+/// AI-generated from the conversation) go to the terminal as-is otherwise, and
+/// an ESC in one would be interpreted there.
+fn plain_text(raw: &str) -> String {
+    let spaced: String = raw
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    spaced.trim().to_string()
+}
+
+/// The `session` element: the payload's `session_name`, dimmed and capped at
+/// [`SESSION_NAME_MAX_CHARS`]. Absent from the payload until a name or an AI
+/// title exists, so absent and blank both produce nothing.
+fn session_segment(input: &Value) -> Option<String> {
+    let name = plain_text(input.get("session_name").and_then(|v| v.as_str())?);
+    if name.is_empty() {
+        return None;
+    }
+    let shown = truncate_chars(&name, SESSION_NAME_MAX_CHARS);
+    Some(format!("{DIM}{shown}{RESET}"))
+}
+
+/// The `pr` element: `#N` (`!N` for a GitLab merge request, `kind` = `mr`)
+/// plus the review state when the payload has one. With `hyperlinks` the
+/// number links to `pr.url`. `pr` is absent unless an open PR was found, and
+/// `review_state` and `kind` are independently optional; a `pr` without a
+/// number is malformed and shows nothing.
+fn pr_segment(input: &Value, hyperlinks: bool) -> Option<String> {
+    let pr = input.get("pr")?;
+    let number = pr.get("number").and_then(|v| v.as_u64())?;
+    let sigil = match pr.get("kind").and_then(|v| v.as_str()) {
+        Some("mr") => '!',
+        _ => '#',
+    };
+    let mut label = format!("{sigil}{number}");
+    if hyperlinks && let Some(url) = pr.get("url").and_then(|v| v.as_str()) {
+        label = render::hyperlink(url, &label);
+    }
+    let mut s = format!("{WHITE}{label}{RESET}");
+    let state = plain_text(
+        pr.get("review_state")
+            .and_then(|v| v.as_str())
+            .unwrap_or(""),
+    );
+    if !state.is_empty() {
+        let state = state.to_lowercase();
+        // Documented values: approved, pending, changes_requested, draft.
+        let (color, text) = match state.as_str() {
+            "approved" => (GREEN, "approved"),
+            "changes_requested" => (RED, "changes"),
+            other => (DIM, other),
+        };
+        s.push_str(&format!(" {color}{text}{RESET}"));
+    }
+    Some(s)
 }
 
 /// Columns Claude Code keeps for itself around the statusline: it indents the
@@ -779,6 +860,142 @@ mod tests {
     use super::*;
     use config::{Align, Dest, Element, Routing};
     use serde_json::json;
+
+    #[test]
+    fn fast_segment_shows_only_when_fast_mode_is_true() {
+        assert_eq!(
+            fast_segment(&json!({ "fast_mode": true })),
+            Some(format!("{YELLOW}fast{RESET}"))
+        );
+        assert_eq!(fast_segment(&json!({ "fast_mode": false })), None);
+        assert_eq!(fast_segment(&json!({})), None);
+        // not a bool: treated as off rather than guessed at.
+        assert_eq!(fast_segment(&json!({ "fast_mode": "true" })), None);
+        assert_eq!(fast_segment(&json!({ "fast_mode": null })), None);
+    }
+
+    #[test]
+    fn session_segment_dims_and_trims_the_name() {
+        assert_eq!(
+            session_segment(&json!({ "session_name": "  limits refactor " })),
+            Some(format!("{DIM}limits refactor{RESET}"))
+        );
+    }
+
+    #[test]
+    fn session_segment_absent_or_blank_is_none() {
+        assert_eq!(session_segment(&json!({})), None);
+        assert_eq!(session_segment(&json!({ "session_name": "" })), None);
+        assert_eq!(session_segment(&json!({ "session_name": " \t\n" })), None);
+        assert_eq!(session_segment(&json!({ "session_name": null })), None);
+    }
+
+    #[test]
+    fn session_segment_caps_long_names_at_32_chars() {
+        let exact = "x".repeat(32);
+        assert_eq!(
+            session_segment(&json!({ "session_name": exact })),
+            Some(format!("{DIM}{exact}{RESET}"))
+        );
+        let seg = session_segment(&json!({ "session_name": "y".repeat(33) })).unwrap();
+        assert_eq!(seg, format!("{DIM}{}…{RESET}", "y".repeat(31)));
+        assert_eq!(render::visible_width(&seg), 32);
+    }
+
+    #[test]
+    fn session_segment_neutralises_control_characters() {
+        // an ESC in the name must not reach the terminal as an escape.
+        assert_eq!(
+            session_segment(&json!({ "session_name": "a\u{1b}[31mb\nc" })),
+            Some(format!("{DIM}a [31mb c{RESET}"))
+        );
+    }
+
+    const PR_URL: &str = "https://github.com/folded/ccstatus-rs/pull/7";
+
+    #[test]
+    fn pr_segment_approved_links_the_number() {
+        let input = json!({ "pr": { "number": 7, "url": PR_URL, "review_state": "approved" } });
+        let seg = pr_segment(&input, true).unwrap();
+        assert_eq!(
+            seg,
+            format!(
+                "{WHITE}{}{RESET} {GREEN}approved{RESET}",
+                render::hyperlink(PR_URL, "#7")
+            )
+        );
+        // the link adds no visible columns: "#7 approved".
+        assert_eq!(render::visible_width(&seg), 11);
+    }
+
+    #[test]
+    fn pr_segment_without_hyperlinks_is_plain() {
+        let input = json!({ "pr": { "number": 7, "url": PR_URL, "review_state": "approved" } });
+        assert_eq!(
+            pr_segment(&input, false),
+            Some(format!("{WHITE}#7{RESET} {GREEN}approved{RESET}"))
+        );
+    }
+
+    #[test]
+    fn pr_segment_review_states() {
+        let state = |s: &str| {
+            pr_segment(&json!({ "pr": { "number": 7, "review_state": s } }), false).unwrap()
+        };
+        assert_eq!(
+            state("changes_requested"),
+            format!("{WHITE}#7{RESET} {RED}changes{RESET}")
+        );
+        // documented non-coloured values, and an unknown one, pass through
+        // dimmed and lowercased.
+        assert_eq!(
+            state("pending"),
+            format!("{WHITE}#7{RESET} {DIM}pending{RESET}")
+        );
+        assert_eq!(
+            state("draft"),
+            format!("{WHITE}#7{RESET} {DIM}draft{RESET}")
+        );
+        assert_eq!(
+            state("MERGEABLE"),
+            format!("{WHITE}#7{RESET} {DIM}mergeable{RESET}")
+        );
+        // an empty state shows like an absent one.
+        assert_eq!(state(""), format!("{WHITE}#7{RESET}"));
+    }
+
+    #[test]
+    fn pr_segment_optional_fields_may_be_absent() {
+        // no review_state, no url, no kind: just the number, even when links
+        // are on.
+        assert_eq!(
+            pr_segment(&json!({ "pr": { "number": 12 } }), true),
+            Some(format!("{WHITE}#12{RESET}"))
+        );
+    }
+
+    #[test]
+    fn pr_segment_merge_request_uses_bang() {
+        let input = json!({ "pr": { "number": 12, "kind": "mr", "review_state": "approved" } });
+        assert_eq!(
+            pr_segment(&input, false),
+            Some(format!("{WHITE}!12{RESET} {GREEN}approved{RESET}"))
+        );
+    }
+
+    #[test]
+    fn pr_segment_absent_or_malformed_is_none() {
+        assert_eq!(pr_segment(&json!({}), true), None);
+        assert_eq!(pr_segment(&json!({ "pr": null }), true), None);
+        assert_eq!(pr_segment(&json!({ "pr": {} }), true), None);
+        assert_eq!(pr_segment(&json!({ "pr": { "number": "7" } }), true), None);
+    }
+
+    #[test]
+    fn pr_segment_url_with_control_characters_is_not_linked() {
+        let input = json!({ "pr": { "number": 7, "url": "https://x\u{7}evil" } });
+        assert_eq!(pr_segment(&input, true), Some(format!("{WHITE}#7{RESET}")));
+    }
 
     #[test]
     fn parse_cache_ttl_maps_known_tiers() {
